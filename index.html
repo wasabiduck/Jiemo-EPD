@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 墨水屏全功能云端看板（图像增强版）</title>
+    <style>
+        body {
+            background-color: #eef2f5;
+            color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        /* 💻 电脑端开发控制台 */
+        .config-bar {
+            margin-bottom: 15px;
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: inline-block;
+            max-width: 950px;
+        }
+        .config-bar button, .config-bar select, .config-bar input {
+            margin: 3px;
+            font-size: 12px;
+            padding: 5px 8px;
+            cursor: pointer;
+            border: 1px solid #000;
+            background: #fff;
+            font-weight: bold;
+        }
+        .config-bar button:hover { background: #000; color: #fff; }
+        .config-bar button.active-mode { background: #000; color: #fff; }
+        .control-group {
+            margin-top: 5px;
+            padding-top: 5px;
+            border-top: 1px dashed #ccc;
+            font-size: 12px;
+            text-align: left;
+        }
+        .control-group label {
+            margin-right: 10px;
+            display: inline-block;
+        }
+        /* 🖼️ 墨水屏纯净画布 (严格 4:3 比例，模拟 400x300) */
+        .preview-container {
+            width: 500px;
+            height: 375px;     
+            margin: 0 auto;
+            background-color: #ffffff; 
+            background-size: cover;
+            background-position: center;
+            border: 3px solid #000;    
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+            box-sizing: border-box;
+            position: relative;
+            overflow: hidden;
+        }
+        /* 可拖拽的元素 */
+        .draggable-item {
+            position: absolute;
+            cursor: grab;
+            user-select: none;
+            padding: 2px;
+            border: 1px dashed #666;
+            background: rgba(255, 255, 255, 0.95);
+            box-sizing: border-box;
+            text-align: left;
+            overflow: hidden;
+        }
+        .draggable-item:active { cursor: grabbing; border-color: #000; }
+        .text-block { font-weight: bold; outline: none; padding: 2px; min-width: 60px; }
+        .text-block:focus { background: #ffffcc; border: 1px solid #000; }
+        .svg-icon-block { display: flex; align-items: center; justify-content: center; }
+        .svg-icon-block svg { width: 100%; height: 100%; }
+        /* 图片增强滤镜渲染 */
+        .image-block img {
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
+            display: block;
+        }
+        .delete-btn {
+            position: absolute;
+            top: 2px; right: 2px;
+            background: #000; color: #fff;
+            border-radius: 50%; width: 16px; height: 16px;
+            font-size: 10px; text-align: center; line-height: 16px;
+            cursor: pointer; display: none; z-index: 10;
+        }
+        .draggable-item:hover .delete-btn { display: block; }
+        .output-box { margin-top: 10px; font-size: 12px; color: #555; }
+    </style>
+</head>
+<body onload="initBoard()">
+    <!-- 💻 电脑端开发控制台 -->
+    <div class="config-bar">
+        <strong>🎨 墨水屏可视化控制台：</strong><br>
+        模式：
+        <button id="btn_gallery" onclick="switchMode('gallery')">🖼️ 图片模式</button>
+        <button id="btn_calendar" onclick="switchMode('calendar')">📅 日历模式</button>
+        <button id="btn_weather" onclick="switchMode('weather')">⛅ 天气模式</button>
+        <br>
+        画布背景：
+        <button onclick="setBgColor('#ffffff')">白底</button>
+        <button onclick="setBgColor('#000000')">黑底</button>
+        <button onclick="setBgColor('#ffcccc')">红调</button>
+        <button onclick="setBgColor('#ffffcc')">黄调</button>
+        背景图: <input type="file" id="bgUpload" accept="image/*" onchange="uploadCustomBg(event)" style="width: 90px;">
+        <br>
+        基础操作：
+        <button onclick="addTextBlock()">➕ 文字</button>
+        <button onclick="addCloudIconBlock()">☁️ SVG图标</button>
+        <button onclick="addImageBlock()">📷 上传图片</button>
+        <select id="fontSizeSelect" onchange="changeActiveFontSize(this.value)">
+            <option value="12px">字号:小</option>
+            <option value="16px" selected>字号:中</option>
+            <option value="22px">字号:大</option>
+            <option value="30px">字号:特大</option>
+        </select>
+        <button onclick="scaleActiveItem(1.2)">放大 ➕</button>
+        <button onclick="scaleActiveItem(0.8)">缩小 ➖</button>
+        <button onclick="centerActiveItem()" style="background: #e2e8f0;">🎯 居中</button>
+        <button onclick="fillScreenActiveItem()" style="background: #cbd5e1;">📺 铺满</button>
+        <button onclick="deleteActiveItem()" style="background: #ffcccc;">🗑️ 删除</button>
+        <button onclick="resetCurrentMode()" style="background: #fca5a5;">重置模式</button>
+        <!-- 📷 图片专属调节控制面板 -->
+        <div class="control-group" id="imageAdjustGroup" style="display:none;">
+            <strong>📷 选中图片增强调节（对比度/清晰度）：</strong><br>
+            <label>对比度: <input type="range" id="rangeContrast" min="50" max="300" value="100" oninput="updateImageFilters()"><span id="valContrast">100</span>%</label>
+            <label>黑白灰度: <input type="range" id="rangeGrayscale" min="0" max="100" value="0" oninput="updateImageFilters()"><span id="valGrayscale">0</span>%</label>
+            <label>锐度/亮度: <input type="range" id="rangeBrightness" min="50" max="200" value="100" oninput="updateImageFilters()"><span id="valBrightness">100</span>%</label>
+        </div>
+    </div>
+    <!-- 🖼️ 墨水屏纯净画布 (400x300 比例) -->
+    <div id="canvasBox" class="preview-container"></div>
+    <div class="output-box" id="outputCoords">就绪：点击选中图片后，可在上方调节对比度和黑白灰度，专为墨水屏优化！</div>
+    <script>
+        let cloudIcons = {};
+        let boardData = {
+            currentMode: 'gallery',
+            modes: {
+                gallery: [
+                    { id: 'g_1', type: 'text', content: '我的图片看板', top: 15, left: 15, width: 180, height: 35, fontSize: '18px' },
+                    { id: 'g_2', type: 'image', content: '1.jpg', top: 60, left: 15, width: 90, height: 70, contrast: 100, grayscale: 0, brightness: 100 }
+                ],
+                calendar: [
+                    { id: 'c_1', type: 'text', content: '📅 2026年11月20日', top: 20, left: 20, width: 250, height: 40, fontSize: '22px' }
+                ],
+                weather: [
+                    { id: 'w_1', type: 'text', content: '⛅ 天气看板', top: 20, left: 20, width: 200, height: 40, fontSize: '22px' },
+                    { id: 'w_2', type: 'svg_icon', content: 'sun', top: 70, left: 20, width: 60, height: 60 }
+                ]
+            },
+            backgrounds: {
+                gallery: { color: '#ffffff', image: '' },
+                calendar: { color: '#ffffff', image: '' },
+                weather: { color: '#ffffff', image: '' }
+            }
+        };
+        let activeElementId = null;
+        async function initBoard() {
+            await fetchCloudIcons();
+            const saved = localStorage.getItem('esp32_pro_board_v3');
+            if (saved) {
+                try { boardData = JSON.parse(saved); } catch(e) {}
+            }
+            switchMode(boardData.currentMode || 'gallery');
+        }
+        async function fetchCloudIcons() {
+            try {
+                const response = await fetch('icons.json');
+                cloudIcons = await response.json();
+            } catch (e) {
+                cloudIcons = {
+                    "sun": '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" stroke="black" stroke-width="2" fill="none"/></svg>',
+                    "cloud": '<svg viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" stroke="black" stroke-width="2" fill="none"/></svg>'
+                };
+            }
+        }
+        function switchMode(modeName) {
+            boardData.currentMode = modeName;
+            ['gallery', 'calendar', 'weather'].forEach(m => {
+                const btn = document.getElementById('btn_' + m);
+                if(btn) btn.className = (m === modeName) ? 'active-mode' : '';
+            });
+            applyBackground();
+            renderCanvas();
+            saveState();
+        }
+        function applyBackground() {
+            const mode = boardData.currentMode;
+            const bg = boardData.backgrounds[mode] || { color: '#ffffff', image: '' };
+            const box = document.getElementById('canvasBox');
+            box.style.backgroundColor = bg.color;
+            box.style.backgroundImage = bg.image ? `url('${bg.image}')` : 'none';
+        }
+        function setBgColor(color) {
+            boardData.backgrounds[boardData.currentMode].color = color;
+            applyBackground();
+            saveState();
+        }
+        function uploadCustomBg(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    boardData.backgrounds[boardData.currentMode].image = e.target.result;
+                    applyBackground();
+                    saveState();
+                }
+                reader.readAsDataURL(file);
+            }
+        }
+        function renderCanvas() {
+            const canvas = document.getElementById('canvasBox');
+            canvas.innerHTML = '';
+            const mode = boardData.currentMode;
+            const items = boardData.modes[mode] || [];
+            items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'draggable-item';
+                div.id = item.id;
+                div.style.top = item.top + 'px';
+                div.style.left = item.left + 'px';
+                div.style.width = (item.width || 80) + 'px';
+                div.style.height = (item.height || 60) + 'px';
+                if(item.fontSize) div.style.fontSize = item.fontSize;
+                div.onclick = (e) => { e.stopPropagation(); selectElement(item.id); };
+                div.onmousedown = (e) => startDrag(e, item.id);
+                if (item.type === 'text') {
+                    div.className += ' text-block';
+                    div.contentEditable = "true";
+                    div.innerText = item.content;
+                    div.oninput = () => { item.content = div.innerText; saveState(); };
+                } else if (item.type === 'svg_icon') {
+                    div.className += ' svg-icon-block';
+                    div.innerHTML = cloudIcons[item.content] || '<svg viewBox="0 0 24 24"><text x="2" y="15" font-size="6">未找到</text></svg>';
+                } else if (item.type === 'image') {
+                    div.className += ' image-block';
+                    // 应用滤镜属性
+                    const c = item.contrast !== undefined ? item.contrast : 100;
+                    const g = item.grayscale !== undefined ? item.grayscale : 0;
+                    const b = item.brightness !== undefined ? item.brightness : 100;
+                    div.innerHTML = `<img src="${item.content}" alt="img" style="filter: contrast(${c}%) grayscale(${g}%) brightness(${b}%);">`;
+                }
+                const delBtn = document.createElement('div');
+                delBtn.className = 'delete-btn';
+                delBtn.innerText = '×';
+                delBtn.onclick = (e) => { e.stopPropagation(); deleteElement(item.id); };
+                div.appendChild(delBtn);
+                canvas.appendChild(div);
+            });
+            if(activeElementId) selectElement(activeElementId);
+        }
+        function selectElement(id) {
+            activeElementId = id;
+            document.querySelectorAll('.draggable-item').forEach(el => el.style.boxShadow = 'none');
+            const target = document.getElementById(id);
+            if (target) target.style.boxShadow = '0 0 6px #000';
+            // 检查当前选中项是否为图片，如果是则显示图片滤镜调节面板
+            const mode = boardData.currentMode;
+            const item = boardData.modes[mode].find(el => el.id === id);
+            const adjustGroup = document.getElementById('imageAdjustGroup');
+            if (item && item.type === 'image') {
+                adjustGroup.style.display = 'block';
+                document.getElementById('rangeContrast').value = item.contrast !== undefined ? item.contrast : 100;
+                document.getElementById('valContrast').innerText = item.contrast !== undefined ? item.contrast : 100;
+                document.getElementById('rangeGrayscale').value = item.grayscale !== undefined ? item.grayscale : 0;
+                document.getElementById('valGrayscale').innerText = item.grayscale !== undefined ? item.grayscale : 0;
+                document.getElementById('rangeBrightness').value = item.brightness !== undefined ? item.brightness : 100;
+                document.getElementById('valBrightness').innerText = item.brightness !== undefined ? item.brightness : 100;
+            } else {
+                adjustGroup.style.display = 'none';
+            }
+        }
+        // 实时更新当前选中图片的滤镜
+        function updateImageFilters() {
+            if (!activeElementId) return;
+            const mode = boardData.currentMode;
+            const item = boardData.modes[mode].find(el => el.id === activeElementId);
+            if (item && item.type === 'image') {
+                item.contrast = parseInt(document.getElementById('rangeContrast').value);
+                item.grayscale = parseInt(document.getElementById('rangeGrayscale').value);
+                item.brightness = parseInt(document.getElementById('rangeBrightness').value);
+                document.getElementById('valContrast').innerText = item.contrast;
+                document.getElementById('valGrayscale').innerText = item.grayscale;
+                document.getElementById('valBrightness').innerText = item.brightness;
+                renderCanvas();
+                saveState();
+            }
+        }
+        function centerActiveItem() {
+            if (!activeElementId) { alert("请先点击选中画布中的某一个组件！"); return; }
+            const mode = boardData.currentMode;
+            const item = boardData.modes[mode].find(el => el.id === activeElementId);
+            const container = document.getElementById('canvasBox');
+            if (item) {
+                item.left = (container.clientWidth - item.width) / 2;
+                item.top = (container.clientHeight - item.height) / 2;
+                renderCanvas();
+                saveState();
+            }
+        }
+        function fillScreenActiveItem() {
+            if (!activeElementId) { alert("请先点击选中画布中的某一个组件！"); return; }
+            const mode = boardData.currentMode;
+            const item = boardData.modes[mode].find(el => el.id === activeElementId);
+            const container = document.getElementById('canvasBox');
+            if (item) {
+                item.left = 0;
+                item.top = 0;
+                item.width = container.clientWidth;
+                item.height = container.clientHeight;
+                renderCanvas();
+                saveState();
+            }
+        }
+        function scaleActiveItem(ratio) {
+            if (!activeElementId) { alert("请先点击选中画布中的某一个组件！"); return; }
+            const mode = boardData.currentMode;
+            const item = boardData.modes[mode].find(el => el.id === activeElementId);
+            if (item) {
+                item.width = Math.max(30, Math.round(item.width * ratio));
+                item.height = Math.max(20, Math.round(item.height * ratio));
+                renderCanvas();
+                saveState();
+            }
+        }
+        function changeActiveFontSize(size) {
+            if (!activeElementId) return;
+            const mode = boardData.currentMode;
+            const item = boardData.modes[mode].find(el => el.id === activeElementId);
+            if (item && item.type === 'text') {
+                item.fontSize = size;
+                renderCanvas();
+                saveState();
+            }
+        }
+        function addTextBlock() {
+            const mode = boardData.currentMode;
+            boardData.modes[mode].push({ id: mode[0]+'_'+Date.now(), type: 'text', content: '新文字', top: 120, left: 150, width: 120, height: 35, fontSize: '16px' });
+            renderCanvas(); saveState();
+        }
+        function addCloudIconBlock() {
+            const keys = Object.keys(cloudIcons).join(', ');
+            const name = prompt(`请输入云端SVG图标代号 (可选: ${keys})：`, "sun");
+            if(!name || !cloudIcons[name]) return;
+            const mode = boardData.currentMode;
+            boardData.modes[mode].push({ id: mode[0]+'_'+Date.now(), type: 'svg_icon', content: name, top: 120, left: 200, width: 60, height: 60 });
+            renderCanvas(); saveState();
+        }
+        function addImageBlock() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(event) {
+                        const mode = boardData.currentMode;
+                        boardData.modes[mode].push({
+                            id: mode[0] + '_' + Date.now(),
+                            type: 'image',
+                            content: event.target.result,
+                            top: 100, left: 150, width: 100, height: 80,
+                            contrast: 120, grayscale: 100, brightness: 100 // 默认微调以适合墨水屏
+                        });
+                        renderCanvas();
+                        saveState();
+                    }
+                    reader.readAsDataURL(file);
+                }
+            };
+            input.click();
+        }
+        function deleteActiveItem() {
+            if (!activeElementId) return;
+            deleteElement(activeElementId);
+        }
+        function deleteElement(id) {
+            const mode = boardData.currentMode;
+            boardData.modes[mode] = boardData.modes[mode].filter(el => el.id !== id);
+            activeElementId = null;
+            document.getElementById('imageAdjustGroup').style.display = 'none';
+            renderCanvas(); saveState();
+        }
+        function saveState() {
+            localStorage.setItem('esp32_pro_board_v3', JSON.stringify(boardData));
+        }
+        function resetCurrentMode() {
+            if(confirm("确定重置当前模式吗？")) {
+                localStorage.removeItem('esp32_pro_board_v3');
+                location.reload();
+            }
+        }
+        // 拖拽逻辑
+        let activeId = null, startX = 0, startY = 0, initialX = 0, initialY = 0;
+        function startDrag(e, id) {
+            if(e.target.contentEditable === "true" && e.target === document.activeElement) return;
+            activeId = id; selectElement(id);
+            const el = document.getElementById(id);
+            startX = e.clientX; startY = e.clientY;
+            initialX = el.offsetLeft; initialY = el.offsetTop;
+            document.onmousemove = elementDrag; document.onmouseup = closeDragElement;
+            e.preventDefault();
+        }
+        function elementDrag(e) {
+            if (!activeId) return;
+            const el = document.getElementById(activeId);
+            const dx = e.clientX - startX, dy = e.clientY - startY;
+            let newX = initialX + dx, newY = initialY + dy;
+            const container = document.getElementById('canvasBox');
+            newX = Math.max(0, Math.min(newX, container.clientWidth - el.offsetWidth));
+            newY = Math.max(0, Math.min(newY, container.clientHeight - el.offsetHeight));
+            el.style.left = newX + 'px'; el.style.top = newY + 'px';
+        }
+        function closeDragElement() {
+            if (activeId) {
+                const mode = boardData.currentMode;
+                const el = document.getElementById(activeId);
+                const item = boardData.modes[mode].find(elObj => elObj.id === activeId);
+                if (item) {
+                    item.left = el.offsetLeft;
+                    item.top = el.offsetTop;
+                    saveState();
+                }
+            }
+            activeId = null; document.onmousemove = null; document.onmouseup = null;
+        }
+    </script>
+</body>
+</html>
